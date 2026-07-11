@@ -1,0 +1,6 @@
+{
+  "name": "IFC 3D Architectural Viewer",
+  "description": "A professional 3D IFC and BIM architectural model viewer featuring real-time customizable shadows, section slicing, measurements, element hierarchy browsers, AutoCAD visual styles, and an integrated AI assistant.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
