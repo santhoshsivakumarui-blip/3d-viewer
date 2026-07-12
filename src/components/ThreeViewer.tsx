@@ -26,6 +26,12 @@ interface ThreeViewerProps {
   elementTranslations?: Record<string, { x: number; y: number; z: number }>;
   clashes?: Clash[];
   activeClashId?: string | null;
+  is2DDrawingView: boolean;
+  setIs2DDrawingView: (val: boolean) => void;
+  twoDStyle: 'blueprint' | 'paper' | 'dark';
+  setTwoDStyle: (val: 'blueprint' | 'paper' | 'dark') => void;
+  twoDProjection: 'top' | 'front' | 'side';
+  setTwoDProjection: (val: 'top' | 'front' | 'side') => void;
 }
 
 export const ThreeViewer: React.FC<ThreeViewerProps> = ({
@@ -50,6 +56,12 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
   elementTranslations = {},
   clashes = [],
   activeClashId = null,
+  is2DDrawingView,
+  setIs2DDrawingView,
+  twoDStyle,
+  setTwoDStyle,
+  twoDProjection,
+  setTwoDProjection,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -57,6 +69,8 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
   // ThreeJS core references
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+  const orthoCameraRef = useRef<THREE.OrthographicCamera | null>(null);
+  const activeCameraRef = useRef<THREE.Camera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const directionalLightRef = useRef<THREE.DirectionalLight | null>(null);
@@ -74,6 +88,231 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
   const [hoveredElementInfo, setHoveredElementInfo] = useState<{ id: string; type: string; name: string } | null>(null);
   const raycasterRef = useRef<THREE.Raycaster>(new THREE.Raycaster());
   const mouseRef = useRef<THREE.Vector2>(new THREE.Vector2());
+
+  // 2D Redline Drawing & Markup Pad types & states
+  interface DrawingStroke {
+    tool: 'pen' | 'arrow' | 'rect' | 'circle';
+    color: string;
+    width: number;
+    points: { x: number; y: number }[];
+    startX?: number;
+    startY?: number;
+    endX?: number;
+    endY?: number;
+  }
+
+  const drawingCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [isDrawingMode, setIsDrawingMode] = useState<boolean>(false);
+  const [drawTool, setDrawTool] = useState<'pen' | 'arrow' | 'rect' | 'circle'>('pen');
+  const [penColor, setPenColor] = useState<string>('#f43f5e'); // Default rose-500
+  const [penWidth, setPenWidth] = useState<number>(3);
+  const [strokes, setStrokes] = useState<DrawingStroke[]>([]);
+  const strokesRef = useRef<DrawingStroke[]>([]);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const activeStrokeRef = useRef<DrawingStroke | null>(null);
+
+
+  // Clear drawing on model preset change
+  useEffect(() => {
+    setStrokes([]);
+  }, [presetId]);
+
+  // Draw arrow head on canvas
+  const drawArrow = (ctx: CanvasRenderingContext2D, fromX: number, fromY: number, toX: number, toY: number, width: number) => {
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.lineTo(toX, toY);
+    ctx.stroke();
+    
+    const angle = Math.atan2(toY - fromY, toX - fromX);
+    const headLength = Math.max(10, width * 3.5);
+    
+    ctx.beginPath();
+    ctx.moveTo(toX, toY);
+    ctx.lineTo(toX - headLength * Math.cos(angle - Math.PI / 6), toY - headLength * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(toX - headLength * Math.cos(angle + Math.PI / 6), toY - headLength * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fill();
+  };
+
+  const redrawDrawingCanvas = (ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, strokesList: DrawingStroke[], activeStroke?: DrawingStroke | null) => {
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    
+    const drawSingleStroke = (s: DrawingStroke) => {
+      if (!s) return;
+      ctx.strokeStyle = s.color || '#f43f5e';
+      ctx.fillStyle = s.color || '#f43f5e';
+      ctx.lineWidth = s.width || 3;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      
+      if (s.tool === 'pen' && s.points && s.points.length > 0) {
+        ctx.beginPath();
+        ctx.moveTo(s.points[0].x, s.points[0].y);
+        for (let i = 1; i < s.points.length; i++) {
+          if (s.points[i]) {
+            ctx.lineTo(s.points[i].x, s.points[i].y);
+          }
+        }
+        ctx.stroke();
+      } else if (s.tool === 'arrow' && s.startX !== undefined && s.startY !== undefined && s.endX !== undefined && s.endY !== undefined) {
+        drawArrow(ctx, s.startX, s.startY, s.endX, s.endY, s.width || 3);
+      } else if (s.tool === 'rect' && s.startX !== undefined && s.startY !== undefined && s.endX !== undefined && s.endY !== undefined) {
+        ctx.beginPath();
+        ctx.rect(s.startX, s.startY, s.endX - s.startX, s.endY - s.startY);
+        ctx.stroke();
+      } else if (s.tool === 'circle' && s.startX !== undefined && s.startY !== undefined && s.endX !== undefined && s.endY !== undefined) {
+        const radius = Math.sqrt(Math.pow(s.endX - s.startX, 2) + Math.pow(s.endY - s.startY, 2));
+        ctx.beginPath();
+        ctx.arc(s.startX, s.startY, radius, 0, 2 * Math.PI);
+        ctx.stroke();
+      }
+    };
+    
+    if (strokesList && Array.isArray(strokesList)) {
+      strokesList.forEach(drawSingleStroke);
+    }
+    if (activeStroke) {
+      drawSingleStroke(activeStroke);
+    }
+  };
+
+  // Sync strokes to ref & redraw
+  useEffect(() => {
+    strokesRef.current = strokes;
+    const canvas = drawingCanvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        redrawDrawingCanvas(ctx, canvas.width, canvas.height, strokes);
+      }
+    }
+  }, [strokes]);
+
+  // Adjust canvas size when drawing mode changes
+  useEffect(() => {
+    const canvas = drawingCanvasRef.current;
+    if (canvas && containerRef.current) {
+      canvas.width = containerRef.current.clientWidth;
+      canvas.height = containerRef.current.clientHeight || 500;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        redrawDrawingCanvas(ctx, canvas.width, canvas.height, strokes);
+      }
+    }
+  }, [isDrawingMode]);
+
+  // Disable orbit controls when drawing mode is active
+  useEffect(() => {
+    if (controlsRef.current) {
+      controlsRef.current.enabled = !isDrawingMode;
+    }
+  }, [isDrawingMode]);
+
+  const handleDrawPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawingMode) return;
+    
+    e.currentTarget.setPointerCapture(e.pointerId);
+    
+    const canvas = drawingCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    setIsDrawing(true);
+    
+    const newStroke: DrawingStroke = {
+      tool: drawTool,
+      color: penColor,
+      width: penWidth,
+      points: [{ x, y }],
+      startX: x,
+      startY: y,
+      endX: x,
+      endY: y,
+    };
+    
+    activeStrokeRef.current = newStroke;
+    
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      redrawDrawingCanvas(ctx, canvas.width, canvas.height, strokes, newStroke);
+    }
+  };
+
+  const handleDrawPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawingMode || !isDrawing || !activeStrokeRef.current) return;
+    
+    const canvas = drawingCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    const stroke = activeStrokeRef.current;
+    stroke.endX = x;
+    stroke.endY = y;
+    
+    if (stroke.tool === 'pen') {
+      stroke.points.push({ x, y });
+    }
+    
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      redrawDrawingCanvas(ctx, canvas.width, canvas.height, strokes, stroke);
+    }
+  };
+
+  const handleDrawPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawingMode || !isDrawing) return;
+    
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    setIsDrawing(false);
+    
+    if (activeStrokeRef.current) {
+      setStrokes((prev) => [...prev, activeStrokeRef.current!]);
+      activeStrokeRef.current = null;
+    }
+  };
+
+  const handleUndoDrawing = () => {
+    setStrokes((prev) => prev.slice(0, -1));
+  };
+
+  const handleClearDrawing = () => {
+    setStrokes([]);
+  };
+
+  const handleSaveDrawing = () => {
+    if (!canvasRef.current || !drawingCanvasRef.current) return;
+    
+    if (rendererRef.current && sceneRef.current && cameraRef.current) {
+      rendererRef.current.render(sceneRef.current, cameraRef.current);
+    }
+    
+    const width = canvasRef.current.width;
+    const height = canvasRef.current.height;
+    
+    const mergeCanvas = document.createElement('canvas');
+    mergeCanvas.width = width;
+    mergeCanvas.height = height;
+    const mergeCtx = mergeCanvas.getContext('2d');
+    if (!mergeCtx) return;
+    
+    mergeCtx.drawImage(canvasRef.current, 0, 0);
+    mergeCtx.drawImage(drawingCanvasRef.current, 0, 0);
+    
+    try {
+      const url = mergeCanvas.toDataURL('image/jpeg', 0.95);
+      const link = document.createElement('a');
+      link.download = `BIM-Markup-${new Date().toISOString().substring(0, 10)}.jpg`;
+      link.href = url;
+      link.click();
+    } catch (err) {
+      console.error('Failed to export markup drawing:', err);
+    }
+  };
 
   // Measurement drawing state
   const [measurementStart, setMeasurementStart] = useState<THREE.Vector3 | null>(null);
@@ -112,6 +351,16 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
     const camera = new THREE.PerspectiveCamera(50, width / height, 0.1, 1000);
     camera.position.set(15, 12, 20);
     cameraRef.current = camera;
+
+    // Create Orthographic Camera for 2D drafting views
+    const aspect = width / height;
+    const dOrtho = 15;
+    const orthoCamera = new THREE.OrthographicCamera(-dOrtho * aspect, dOrtho * aspect, dOrtho, -dOrtho, 0.1, 1000);
+    orthoCamera.position.set(0, 35, 0.001);
+    orthoCamera.lookAt(0, 0, 0);
+    orthoCameraRef.current = orthoCamera;
+
+    activeCameraRef.current = camera;
 
     // 3. Create WebGL Renderer
     const renderer = new THREE.WebGLRenderer({
@@ -168,11 +417,11 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
     directionalLight.shadow.camera.near = 0.5;
     directionalLight.shadow.camera.far = 100;
     
-    const d = 25;
-    directionalLight.shadow.camera.left = -d;
-    directionalLight.shadow.camera.right = d;
-    directionalLight.shadow.camera.top = d;
-    directionalLight.shadow.camera.bottom = -d;
+    const dShadow = 25;
+    directionalLight.shadow.camera.left = -dShadow;
+    directionalLight.shadow.camera.right = dShadow;
+    directionalLight.shadow.camera.top = dShadow;
+    directionalLight.shadow.camera.bottom = -dShadow;
     directionalLight.shadow.bias = -0.0005;
     
     scene.add(directionalLight);
@@ -197,10 +446,29 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
     const resizeObserver = new ResizeObserver((entries) => {
       if (!entries || entries.length === 0) return;
       const { width, height } = entries[0].contentRect;
-      if (rendererRef.current && cameraRef.current) {
-        cameraRef.current.aspect = width / height;
-        cameraRef.current.updateProjectionMatrix();
+      const aspect = width / height;
+      if (rendererRef.current) {
         rendererRef.current.setSize(width, height);
+      }
+      if (cameraRef.current) {
+        cameraRef.current.aspect = aspect;
+        cameraRef.current.updateProjectionMatrix();
+      }
+      if (orthoCameraRef.current) {
+        const d = 15;
+        orthoCameraRef.current.left = -d * aspect;
+        orthoCameraRef.current.right = d * aspect;
+        orthoCameraRef.current.top = d;
+        orthoCameraRef.current.bottom = -d;
+        orthoCameraRef.current.updateProjectionMatrix();
+      }
+      if (drawingCanvasRef.current) {
+        drawingCanvasRef.current.width = width;
+        drawingCanvasRef.current.height = height;
+        const ctx = drawingCanvasRef.current.getContext('2d');
+        if (ctx) {
+          redrawDrawingCanvas(ctx, width, height, strokesRef.current);
+        }
       }
     });
     resizeObserver.observe(containerRef.current);
@@ -296,8 +564,9 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
       }
 
       // 4. Final Canvas Redraw
-      if (rendererRef.current && sceneRef.current && cameraRef.current) {
-        rendererRef.current.render(sceneRef.current, cameraRef.current);
+      const activeCam = activeCameraRef.current || cameraRef.current;
+      if (rendererRef.current && sceneRef.current && activeCam) {
+        rendererRef.current.render(sceneRef.current, activeCam);
       }
     };
 
@@ -314,6 +583,38 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
         rendererRef.current.dispose();
       }
       materialsCacheRef.current.forEach((m) => m.dispose());
+    };
+  }, []);
+
+  // Listen for Live interactive 3D fly tours
+  useEffect(() => {
+    const handleTourCommand = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      if (!customEvent.detail) return;
+      const { action, x, y, z, tx, ty, tz } = customEvent.detail;
+      
+      if (action === 'fly' && cameraRef.current && controlsRef.current) {
+        // Position camera and target position immediately (damping makes it feel smooth)
+        cameraRef.current.position.set(x, y, z);
+        controlsRef.current.target.set(tx, ty, tz);
+        controlsRef.current.update();
+      } else if (action === 'rotate' && cameraRef.current && controlsRef.current) {
+        const target = controlsRef.current.target;
+        const radius = cameraRef.current.position.distanceTo(target);
+        const theta = (customEvent.detail.angle || 0) * (Math.PI / 180);
+        
+        cameraRef.current.position.set(
+          target.x + radius * Math.cos(theta),
+          cameraRef.current.position.y,
+          target.z + radius * Math.sin(theta)
+        );
+        controlsRef.current.update();
+      }
+    };
+    
+    window.addEventListener('archi-tour-command', handleTourCommand);
+    return () => {
+      window.removeEventListener('archi-tour-command', handleTourCommand);
     };
   }, []);
 
@@ -334,6 +635,95 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
       controlsRef.current.enablePan = true;
     }
   }, [navMode]);
+
+  // Handle switching to/from 2D Drawing Sheet Orthographic Projection
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+
+    if (is2DDrawingView) {
+      const ortho = orthoCameraRef.current;
+      if (ortho) {
+        // Position camera perfectly perpendicular based on projection setting
+        if (twoDProjection === 'top') {
+          ortho.position.set(0, 35, 0.001); // offset slightly to keep 'up' vector valid
+          controls.target.set(0, 2, 0);
+          controls.enableRotate = false; // Lock rotation in Plan Floor views to remain perfectly flat plan
+        } else if (twoDProjection === 'front') {
+          ortho.position.set(0, 2, 35);
+          controls.target.set(0, 2, 0);
+          controls.enableRotate = true; // allow some orbital adjustment in elevation view if they want
+        } else { // side
+          ortho.position.set(35, 2, 0);
+          controls.target.set(0, 2, 0);
+          controls.enableRotate = true;
+        }
+
+        ortho.updateProjectionMatrix();
+        controls.object = ortho;
+        activeCameraRef.current = ortho;
+      }
+    } else {
+      const pers = cameraRef.current;
+      if (pers) {
+        pers.position.set(15, 12, 20);
+        controls.target.set(0, 2, 0);
+        controls.object = pers;
+        activeCameraRef.current = pers;
+        controls.enableRotate = true;
+        controls.enableZoom = true;
+        controls.enablePan = true;
+      }
+    }
+    controls.update();
+  }, [is2DDrawingView, twoDProjection]);
+
+  // Update Background Color and Grid Helper according to 2D Style
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    if (is2DDrawingView) {
+      if (twoDStyle === 'blueprint') {
+        scene.background = new THREE.Color('#0a1128'); // Blueprint Navy blue
+        if (gridHelperRef.current) {
+          scene.remove(gridHelperRef.current);
+          const grid = new THREE.GridHelper(80, 80, '#1e3a8a', '#172554');
+          grid.position.y = -0.01;
+          scene.add(grid);
+          gridHelperRef.current = grid;
+        }
+      } else if (twoDStyle === 'paper') {
+        scene.background = new THREE.Color('#fcfbfa'); // Architectural White/Beige paper
+        if (gridHelperRef.current) {
+          scene.remove(gridHelperRef.current);
+          const grid = new THREE.GridHelper(80, 80, '#d1d5db', '#f3f4f6');
+          grid.position.y = -0.01;
+          scene.add(grid);
+          gridHelperRef.current = grid;
+        }
+      } else { // dark CAD draft
+        scene.background = new THREE.Color('#121212'); // AutoCAD classic charcoal dark
+        if (gridHelperRef.current) {
+          scene.remove(gridHelperRef.current);
+          const grid = new THREE.GridHelper(80, 80, '#333333', '#222222');
+          grid.position.y = -0.01;
+          scene.add(grid);
+          gridHelperRef.current = grid;
+        }
+      }
+    } else {
+      // Standard 3D BIM workspace background
+      scene.background = new THREE.Color('#121212');
+      if (gridHelperRef.current) {
+        scene.remove(gridHelperRef.current);
+        const grid = new THREE.GridHelper(80, 80, '#3a4454', '#202835');
+        grid.position.y = -0.01;
+        scene.add(grid);
+        gridHelperRef.current = grid;
+      }
+    }
+  }, [is2DDrawingView, twoDStyle]);
 
   // Update Real-time Shadow lighting and sun coordinates
   useEffect(() => {
@@ -389,7 +779,81 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
       };
 
       // Styles: realistic, conceptual, wireframe, xray, hiddenLine
-      if (visualStyle === 'realistic') {
+      if (is2DDrawingView) {
+        if (twoDStyle === 'blueprint') {
+          const bpMat = (col: string) => new THREE.MeshBasicMaterial({
+            ...baseMatOptions,
+            color: '#38bdf8',
+            wireframe: true,
+          });
+          const glassMat = new THREE.MeshBasicMaterial({
+            ...baseMatOptions,
+            color: '#22d3ee',
+            transparent: true,
+            opacity: 0.25,
+            wireframe: true,
+          });
+          materialsCacheRef.current.set('concrete', bpMat('#38bdf8'));
+          materialsCacheRef.current.set('drywall', bpMat('#38bdf8'));
+          materialsCacheRef.current.set('wood', bpMat('#38bdf8'));
+          materialsCacheRef.current.set('steel', bpMat('#38bdf8'));
+          materialsCacheRef.current.set('glass', glassMat);
+          materialsCacheRef.current.set('window_frame', bpMat('#38bdf8'));
+          materialsCacheRef.current.set('railing', bpMat('#38bdf8'));
+          materialsCacheRef.current.set('furniture_couch', bpMat('#38bdf8'));
+          materialsCacheRef.current.set('soil', bpMat('#38bdf8'));
+          materialsCacheRef.current.set('gold', bpMat('#38bdf8'));
+          materialsCacheRef.current.set('brick', bpMat('#38bdf8'));
+        } else if (twoDStyle === 'paper') {
+          const paperMat = (col: string) => new THREE.MeshBasicMaterial({
+            ...baseMatOptions,
+            color: '#1f2937',
+            wireframe: true,
+          });
+          const glassMat = new THREE.MeshBasicMaterial({
+            ...baseMatOptions,
+            color: '#0284c7',
+            transparent: true,
+            opacity: 0.15,
+            wireframe: true,
+          });
+          materialsCacheRef.current.set('concrete', paperMat('#1f2937'));
+          materialsCacheRef.current.set('drywall', paperMat('#1f2937'));
+          materialsCacheRef.current.set('wood', paperMat('#1f2937'));
+          materialsCacheRef.current.set('steel', paperMat('#1f2937'));
+          materialsCacheRef.current.set('glass', glassMat);
+          materialsCacheRef.current.set('window_frame', paperMat('#1f2937'));
+          materialsCacheRef.current.set('railing', paperMat('#1f2937'));
+          materialsCacheRef.current.set('furniture_couch', paperMat('#1f2937'));
+          materialsCacheRef.current.set('soil', paperMat('#1f2937'));
+          materialsCacheRef.current.set('gold', paperMat('#1f2937'));
+          materialsCacheRef.current.set('brick', paperMat('#1f2937'));
+        } else { // dark
+          const darkMat = (col: string) => new THREE.MeshBasicMaterial({
+            ...baseMatOptions,
+            color: '#e4e4e7',
+            wireframe: true,
+          });
+          const glassMat = new THREE.MeshBasicMaterial({
+            ...baseMatOptions,
+            color: '#38bdf8',
+            transparent: true,
+            opacity: 0.2,
+            wireframe: true,
+          });
+          materialsCacheRef.current.set('concrete', darkMat('#e4e4e7'));
+          materialsCacheRef.current.set('drywall', darkMat('#e4e4e7'));
+          materialsCacheRef.current.set('wood', darkMat('#e4e4e7'));
+          materialsCacheRef.current.set('steel', darkMat('#e4e4e7'));
+          materialsCacheRef.current.set('glass', glassMat);
+          materialsCacheRef.current.set('window_frame', darkMat('#e4e4e7'));
+          materialsCacheRef.current.set('railing', darkMat('#e4e4e7'));
+          materialsCacheRef.current.set('furniture_couch', darkMat('#e4e4e7'));
+          materialsCacheRef.current.set('soil', darkMat('#e4e4e7'));
+          materialsCacheRef.current.set('gold', darkMat('#e4e4e7'));
+          materialsCacheRef.current.set('brick', darkMat('#e4e4e7'));
+        }
+      } else if (visualStyle === 'realistic') {
         materialsCacheRef.current.set('concrete', new THREE.MeshStandardMaterial({
           ...baseMatOptions,
           color: '#848a94',
@@ -1148,7 +1612,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
       });
     }
 
-  }, [presetId, visualStyle, hierarchy, materialOverrides, elementTranslations]);
+  }, [presetId, visualStyle, hierarchy, materialOverrides, elementTranslations, is2DDrawingView, twoDStyle]);
 
   // Adjust Elements Visibility according to the side-hierarchy checkboxes
   useEffect(() => {
@@ -1162,12 +1626,13 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
   // Handle Raycasting to Hover and Select element meshes
   useEffect(() => {
     const handlePointerMove = (e: PointerEvent) => {
-      if (!canvasRef.current || !cameraRef.current) return;
+      const activeCam = activeCameraRef.current || cameraRef.current;
+      if (!canvasRef.current || !activeCam) return;
       const rect = canvasRef.current.getBoundingClientRect();
       mouseRef.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       mouseRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-      raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current);
+      raycasterRef.current.setFromCamera(mouseRef.current, activeCam);
       const intersects = raycasterRef.current.intersectObjects(Array.from(elementMeshesRef.current.values()), true);
 
       if (intersects.length > 0) {
@@ -1195,7 +1660,8 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
     };
 
     const handlePointerDown = (e: PointerEvent) => {
-      if (!canvasRef.current || !cameraRef.current) return;
+      const activeCam = activeCameraRef.current || cameraRef.current;
+      if (!canvasRef.current || !activeCam) return;
       
       // Right click is standard for controls; limit click selection to left-mouse button
       if (e.button !== 0) return;
@@ -1204,7 +1670,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
       mouseRef.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       mouseRef.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-      raycasterRef.current.setFromCamera(mouseRef.current, cameraRef.current);
+      raycasterRef.current.setFromCamera(mouseRef.current, activeCam);
       const intersects = raycasterRef.current.intersectObjects(Array.from(elementMeshesRef.current.values()), true);
 
       if (intersects.length > 0) {
@@ -1437,27 +1903,32 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
 
   // Quick CAD Views compass rotations
   const handleViewCubeClick = (dir: 'top' | 'front' | 'right' | 'isometric') => {
-    if (!cameraRef.current || !controlsRef.current) return;
+    const activeCam = activeCameraRef.current || cameraRef.current;
+    if (!activeCam || !controlsRef.current) return;
     
     const target = controlsRef.current.target;
     
     if (dir === 'top') {
-      cameraRef.current.position.set(target.x, target.y + 25, target.z + 0.01);
+      activeCam.position.set(target.x, target.y + 25, target.z + 0.01);
     } else if (dir === 'front') {
-      cameraRef.current.position.set(target.x, target.y, target.z + 25);
+      activeCam.position.set(target.x, target.y, target.z + 25);
     } else if (dir === 'right') {
-      cameraRef.current.position.set(target.x + 25, target.y, target.z);
+      activeCam.position.set(target.x + 25, target.y, target.z);
     } else if (dir === 'isometric') {
-      cameraRef.current.position.set(target.x + 18, target.y + 15, target.z + 18);
+      activeCam.position.set(target.x + 18, target.y + 15, target.z + 18);
     }
     
+    if (activeCam instanceof THREE.OrthographicCamera) {
+      activeCam.updateProjectionMatrix();
+    }
     controlsRef.current.update();
   };
 
   // Zoom In / Zoom Out camera control
   const handleZoom = (zoomIn: boolean) => {
-    if (!cameraRef.current || !controlsRef.current) return;
-    const camera = cameraRef.current;
+    const activeCam = activeCameraRef.current || cameraRef.current;
+    if (!activeCam || !controlsRef.current) return;
+    const camera = activeCam;
     const controls = controlsRef.current;
     
     const target = controls.target;
@@ -1470,6 +1941,11 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
     
     dir.normalize().multiplyScalar(newDistance);
     camera.position.copy(target).add(dir);
+    
+    if (camera instanceof THREE.OrthographicCamera) {
+      camera.zoom = zoomIn ? camera.zoom * 1.33 : camera.zoom * 0.75;
+      camera.updateProjectionMatrix();
+    }
     controls.update();
   };
 
@@ -1477,6 +1953,212 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
     <div ref={containerRef} className="relative w-full h-full bg-[#121212] cad-grid overflow-hidden" id="threejs-container-frame">
       {/* Three WebGL Canvas */}
       <canvas ref={canvasRef} className="w-full h-full block cursor-crosshair" id="architectural-model-canvas" />
+
+      {/* 2D Redline Drawing & Markup Overlay Canvas */}
+      <canvas
+        ref={drawingCanvasRef}
+        onPointerDown={handleDrawPointerDown}
+        onPointerMove={handleDrawPointerMove}
+        onPointerUp={handleDrawPointerUp}
+        className={`absolute inset-0 w-full h-full block ${
+          isDrawingMode ? 'pointer-events-auto opacity-100 cursor-crosshair' : 'pointer-events-none opacity-80'
+        }`}
+        style={{ zIndex: 5 }}
+        id="architectural-markup-canvas"
+      />
+
+      {/* Floating Markup Toolbar Panel */}
+      <div className="absolute top-4 left-4 flex flex-col gap-2 z-20 pointer-events-auto" id="markup-control-panel">
+        {/* Toggle 2D Blueprint Projection Mode */}
+        <button
+          onClick={() => {
+            setIs2DDrawingView(!is2DDrawingView);
+            // If turning on 2D, make sure we activate drawing mode automatically if they want, or keep separate
+          }}
+          className={`flex items-center gap-2 px-3 py-1.5 border rounded shadow-2xl text-[10px] font-bold uppercase tracking-wider transition cursor-pointer font-mono ${
+            is2DDrawingView
+              ? 'bg-blue-950 border-blue-500 text-blue-400'
+              : 'bg-[#1a1a1a] border-[#333] text-[#d1d1d1] hover:border-[#555]'
+          }`}
+          id="btn-toggle-2d-drawing-view"
+          title="Switch between 3D Model view and 2D Orthographic CAD Drawing Sheet"
+        >
+          <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 4L9 7" />
+          </svg>
+          {is2DDrawingView ? '2D View: Active' : 'Convert to 2D Drawing'}
+        </button>
+
+        {is2DDrawingView && (
+          <div className="bg-[#181818]/95 backdrop-blur-md border border-[#333] p-3 rounded shadow-2xl flex flex-col gap-3 w-52 text-[10px] text-[#d1d1d1] animate-fade-in font-mono" id="2d-projection-options">
+            {/* Projection Type Selection */}
+            <div className="space-y-1.5">
+              <span className="text-[8px] font-mono font-bold uppercase text-[#666] tracking-wider block">Projection Angle</span>
+              <div className="grid grid-cols-3 gap-1">
+                {[
+                  { id: 'top', label: 'Plan' },
+                  { id: 'front', label: 'Elev.' },
+                  { id: 'side', label: 'Sect.' },
+                ].map((proj) => (
+                  <button
+                    key={proj.id}
+                    onClick={() => setTwoDProjection(proj.id as 'top' | 'front' | 'side')}
+                    className={`py-1 rounded text-[8px] font-mono font-bold uppercase transition border cursor-pointer ${
+                      twoDProjection === proj.id
+                        ? 'bg-blue-950/40 border-blue-500 text-blue-300'
+                        : 'bg-[#121212] border-[#222] text-neutral-500 hover:text-[#d1d1d1]'
+                    }`}
+                    title={`View standard ${proj.label}`}
+                  >
+                    {proj.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Drawing Sheet Style */}
+            <div className="space-y-1.5">
+              <span className="text-[8px] font-mono font-bold uppercase text-[#666] tracking-wider block">Drafting Style</span>
+              <div className="grid grid-cols-3 gap-1">
+                {[
+                  { id: 'blueprint', label: 'Blue' },
+                  { id: 'paper', label: 'Paper' },
+                  { id: 'dark', label: 'Dark' },
+                ].map((style) => (
+                  <button
+                    key={style.id}
+                    onClick={() => setTwoDStyle(style.id as 'blueprint' | 'paper' | 'dark')}
+                    className={`py-1 rounded text-[8px] font-mono font-bold uppercase transition border cursor-pointer ${
+                      twoDStyle === style.id
+                        ? 'bg-blue-950/40 border-blue-500 text-blue-300'
+                        : 'bg-[#121212] border-[#222] text-neutral-500 hover:text-[#d1d1d1]'
+                    }`}
+                    title={`Apply ${style.label} theme`}
+                  >
+                    {style.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Toggle Mode Button */}
+        <button
+          onClick={() => setIsDrawingMode(!isDrawingMode)}
+          className={`flex items-center gap-2 px-3 py-1.5 border rounded shadow-2xl text-[10px] font-bold uppercase tracking-wider transition cursor-pointer font-mono ${
+            isDrawingMode
+              ? 'bg-rose-950 border-rose-500 text-rose-400'
+              : 'bg-[#1a1a1a] border-[#333] text-[#d1d1d1] hover:border-[#555]'
+          }`}
+          id="btn-toggle-markup-draw"
+          title="Toggle 2D Redline Drawing & Markup Pad"
+        >
+          <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+          </svg>
+          {isDrawingMode ? 'Drawing mode: On' : 'Drawing overlay'}
+        </button>
+
+        {isDrawingMode && (
+          <div className="bg-[#181818]/95 backdrop-blur-md border border-[#333] p-3 rounded shadow-2xl flex flex-col gap-3 w-52 text-[10px] text-[#d1d1d1] animate-fade-in font-mono" id="markup-options-card">
+            {/* Tool Selection */}
+            <div className="space-y-1.5">
+              <span className="text-[8px] font-mono font-bold uppercase text-[#666] tracking-wider block">Tool Type</span>
+              <div className="grid grid-cols-4 gap-1">
+                {(['pen', 'arrow', 'rect', 'circle'] as const).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setDrawTool(t)}
+                    className={`py-1 rounded text-[8px] font-mono font-bold uppercase transition border cursor-pointer ${
+                      drawTool === t
+                        ? 'bg-blue-950/40 border-blue-500 text-blue-300'
+                        : 'bg-[#121212] border-[#222] text-neutral-500 hover:text-neutral-300'
+                    }`}
+                    title={`Draw ${t}`}
+                  >
+                    {t === 'pen' ? '✎ Pen' : t === 'arrow' ? '➔ Arrow' : t === 'rect' ? '▮ Box' : '◯ O'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Color Swatches */}
+            <div className="space-y-1.5">
+              <span className="text-[8px] font-mono font-bold uppercase text-[#666] tracking-wider block">Brush Color</span>
+              <div className="flex gap-1.5 items-center justify-between">
+                {[
+                  { name: 'Red', hex: '#f43f5e' },
+                  { name: 'Yellow', hex: '#eab308' },
+                  { name: 'Green', hex: '#10b981' },
+                  { name: 'Cyan', hex: '#06b6d4' },
+                  { name: 'Purple', hex: '#a855f7' },
+                  { name: 'White', hex: '#ffffff' },
+                ].map((color) => (
+                  <button
+                    key={color.hex}
+                    onClick={() => setPenColor(color.hex)}
+                    className="w-4 h-4 rounded-full border border-white/10 hover:scale-110 transition relative flex items-center justify-center shrink-0 cursor-pointer"
+                    style={{ backgroundColor: color.hex }}
+                    title={color.name}
+                  >
+                    {penColor === color.hex && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-black/40" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Thickness */}
+            <div className="space-y-1.5">
+              <div className="flex justify-between items-center text-[8px] font-mono font-bold uppercase text-[#666] tracking-wider">
+                <span>Thickness</span>
+                <span className="text-[#999]">{penWidth}px</span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="12"
+                value={penWidth}
+                onChange={(e) => setPenWidth(Number(e.target.value))}
+                className="w-full accent-blue-500 bg-[#121212] h-1 rounded cursor-pointer"
+              />
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-1.5 border-t border-[#2d2d2d] pt-2">
+              <button
+                onClick={handleUndoDrawing}
+                disabled={strokes.length === 0}
+                className="flex-1 py-1 rounded bg-[#252525] border border-[#333] hover:border-[#444] text-[9px] font-mono text-center disabled:opacity-35 transition cursor-pointer"
+                title="Undo last stroke"
+              >
+                Undo
+              </button>
+              <button
+                onClick={handleClearDrawing}
+                disabled={strokes.length === 0}
+                className="flex-1 py-1 rounded bg-[#2a1c1c] border border-rose-950/40 hover:border-rose-900 text-rose-400 text-[9px] font-mono text-center disabled:opacity-35 transition cursor-pointer"
+                title="Clear all drawings"
+              >
+                Clear
+              </button>
+            </div>
+
+            <button
+              onClick={handleSaveDrawing}
+              className="w-full py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-[9px] font-mono font-bold text-center transition flex items-center justify-center gap-1 cursor-pointer"
+              title="Save current model view with markups as image"
+            >
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              Export Image
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* AutoCAD View Cube Navigation widget */}
       <div className="absolute top-4 right-4 bg-[#1a1a1a] border border-[#333] p-2 rounded flex flex-col gap-1 z-10 text-[10px] text-[#d1d1d1] shadow-2xl" id="autocad-navigation-cube">
@@ -1541,6 +2223,37 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({
             ) : (
               <span>Ruler: Click any mesh surface to specify the start coordinate.</span>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* 2D Sheet Title Block */}
+      {is2DDrawingView && (
+        <div className="absolute bottom-4 left-4 right-4 bg-[#141414]/95 backdrop-blur-md border border-[#333] p-2.5 text-[9px] font-mono text-[#cbd5e1] flex items-center justify-between pointer-events-auto z-10 rounded shadow-2xl" id="2d-drawing-title-block">
+          <div className="flex flex-col gap-0.5">
+            <div className="text-[7px] text-[#888] font-bold uppercase tracking-widest">Architectural Sheet</div>
+            <div className="text-sm font-bold text-blue-400 font-mono tracking-wider">
+              {twoDProjection === 'top' ? 'FLOOR PLAN LAYOUT SHEET' : twoDProjection === 'front' ? 'FRONT ELEVATION DETAIL' : 'SIDE SECTION DETAIL'}
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-4 gap-4 px-4 border-l border-[#222] text-right">
+            <div>
+              <div className="text-[7px] text-[#555] uppercase font-bold">Project</div>
+              <div className="font-bold truncate max-w-[80px] uppercase text-[#bbb]">{presetId} BIM Model</div>
+            </div>
+            <div>
+              <div className="text-[7px] text-[#555] uppercase font-bold">Scale</div>
+              <div className="font-bold text-[#bbb]">1:125 (Orthographic)</div>
+            </div>
+            <div>
+              <div className="text-[7px] text-[#555] uppercase font-bold">Drafted By</div>
+              <div className="font-bold text-emerald-400">AI-Studio CAD</div>
+            </div>
+            <div>
+              <div className="text-[7px] text-[#555] uppercase font-bold">Date</div>
+              <div className="font-bold text-[#bbb]">{new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</div>
+            </div>
           </div>
         </div>
       )}

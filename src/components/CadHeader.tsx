@@ -5,7 +5,8 @@ import {
   Search, 
   History, 
   Clock,
-  Globe 
+  Globe,
+  Tv
 } from 'lucide-react';
 import { Language, languagesList, TranslationDict } from '../utils/translations';
 
@@ -28,6 +29,10 @@ interface CadHeaderProps {
   setShadowIntensity: (v: number) => void;
   setShowDocsModal: (b: boolean) => void;
   setShowAboutModal: (b: boolean) => void;
+  setShowLearningHubModal: (b: boolean) => void;
+  setShowElectronModal?: (b: boolean) => void;
+  setShowWasmLabModal?: (b: boolean) => void;
+  setShowPerformanceMonitor?: (b: boolean) => void;
   language: Language;
   setLanguage: (lang: Language) => void;
   t: TranslationDict;
@@ -53,6 +58,10 @@ export const CadHeader: React.FC<CadHeaderProps> = ({
   setShadowIntensity,
   setShowDocsModal,
   setShowAboutModal,
+  setShowLearningHubModal,
+  setShowElectronModal,
+  setShowWasmLabModal,
+  setShowPerformanceMonitor,
   language,
   setLanguage,
   t,
@@ -298,6 +307,38 @@ export const CadHeader: React.FC<CadHeaderProps> = ({
       action: () => setShowDocsModal(true)
     },
     {
+      id: 'open-learning',
+      name: '🎬 Training & Video Center',
+      category: 'Help',
+      description: 'Open simulated videos, interactive walkthroughs, and learning certifications',
+      keywords: ['video', 'learning', 'training', 'demo', 'tutorial', 'quiz', 'certify'],
+      action: () => setShowLearningHubModal(true)
+    },
+    {
+      id: 'open-electron',
+      name: '🖥️ Desktop App Mode (Electron)',
+      category: 'System',
+      description: 'Open native packaging guide, command lines, and diagnostic monitor telemetry',
+      keywords: ['electron', 'desktop', 'app', 'package', 'offline', 'exe', 'applet'],
+      action: () => setShowElectronModal && setShowElectronModal(true)
+    },
+    {
+      id: 'open-wasmlab',
+      name: '⚡ WebAssembly Performance Lab',
+      category: 'System',
+      description: 'Run native collision performance benchmarks and view Rust/C++ compilation pipelines',
+      keywords: ['wasm', 'webassembly', 'performance', 'benchmark', 'speed', 'rust', 'c++'],
+      action: () => setShowWasmLabModal && setShowWasmLabModal(true)
+    },
+    {
+      id: 'open-perfmonitor',
+      name: '📊 Engine Performance Monitor',
+      category: 'System',
+      description: 'Calculate rendering frame rate, measure parsing time, and view real-time Wasm vs JS comparison graph',
+      keywords: ['fps', 'framerate', 'monitor', 'diagnostics', 'telemetry', 'benchmark', 'graph', 'wasm', 'javascript'],
+      action: () => setShowPerformanceMonitor && setShowPerformanceMonitor(true)
+    },
+    {
       id: 'open-about',
       name: t.menuDiagnostics,
       category: 'Help',
@@ -443,6 +484,10 @@ export const CadHeader: React.FC<CadHeaderProps> = ({
     {
       name: t.menuHelp,
       items: [
+        { label: '🎬 Training & Video Center', action: () => setShowLearningHubModal(true) },
+        { label: '🖥️ Desktop App Mode (Electron)', action: () => setShowElectronModal && setShowElectronModal(true) },
+        { label: '⚡ WebAssembly Performance Lab', action: () => setShowWasmLabModal && setShowWasmLabModal(true) },
+        { label: '📊 Engine Performance Monitor', action: () => setShowPerformanceMonitor && setShowPerformanceMonitor(true) },
         { label: t.menuOpenGuide, action: () => setShowDocsModal(true) },
         { label: t.menuDiagnostics, action: () => setShowAboutModal(true) }
       ]
@@ -520,6 +565,29 @@ export const CadHeader: React.FC<CadHeaderProps> = ({
           <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
           <span>{t.project}: <b className="text-white font-medium">{activeModelName.endsWith('.ifc') ? activeModelName : `${activeModelName}.ifc`}</b></span>
         </div>
+
+        {/* Quick Diagnostics/Performance Monitor trigger button */}
+        <button
+          onClick={() => setShowPerformanceMonitor && setShowPerformanceMonitor(true)}
+          className="bg-[#181a15] hover:bg-[#20251b] text-cyan-400 font-mono text-[9.5px] px-2 py-0.5 rounded-sm flex items-center gap-1.5 transition duration-150 cursor-pointer border border-emerald-500/20 shadow-md"
+          id="btn-trigger-perf-hud"
+          title="Open WebAssembly Engine Performance Diagnostics HUD"
+        >
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span><b>Engine Telemetry</b></span>
+        </button>
+
+        {/* Pulsing Training Center Demo & Learning Video Link */}
+        <button
+          onClick={() => setShowLearningHubModal(true)}
+          className="bg-amber-600 hover:bg-amber-500 text-white font-sans text-[9.5px] px-2.5 py-0.5 rounded-sm flex items-center gap-1.5 transition duration-150 cursor-pointer shadow-lg animate-pulse"
+          id="btn-trigger-learning-center"
+          title="Watch Simulated Video Demos and Get Certified!"
+          style={{ animationDuration: '3s' }}
+        >
+          <Tv className="w-3 h-3 text-white" />
+          <span><b>Training Center</b></span>
+        </button>
 
         <div className="relative hidden sm:block" id="commands-search-box">
           <form onSubmit={handleSearchSubmit} className="flex items-center">

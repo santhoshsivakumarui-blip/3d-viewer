@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { VisualStyle, NavMode, BimElement, Measurement } from './types';
 import { MODEL_PRESETS, VILLA_HIERARCHY, OFFICE_HIERARCHY, WAREHOUSE_HIERARCHY } from './data';
 import { ThreeViewer } from './components/ThreeViewer';
@@ -10,8 +10,14 @@ import { SettingsDrawer } from './components/SettingsDrawer';
 import { CadFooter } from './components/CadFooter';
 import { AboutModal } from './components/AboutModal';
 import { DocsModal } from './components/DocsModal';
+import { LearningHubModal } from './components/LearningHubModal';
+import { ElectronModal } from './components/ElectronModal';
+import { WasmLabModal } from './components/WasmLabModal';
+import { PerformanceMonitor } from './components/PerformanceMonitor';
+import { SessionRestoreModal } from './components/SessionRestoreModal';
 import { Trash2, Ruler, Play, Pause, Sun } from 'lucide-react';
 import { Language, translations } from './utils/translations';
+import { usePersistentAnnotations } from './utils/usePersistentAnnotations';
 
 export default function App() {
   // Multilingual states
@@ -19,16 +25,38 @@ export default function App() {
   const t = translations[language];
   const isRtl = language === 'ur' || language === 'ar';
 
+  // User annotations persistence
+  const { annotations, updateAnnotation, clearAllAnnotations } = usePersistentAnnotations();
+
   // Model presets and active selected preset
-  const [activePresetId, setActivePresetId] = useState<string>('villa');
+  const [activePresetId, setActivePresetId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('archiview_activePresetId');
+      return saved !== null ? saved : 'villa';
+    } catch {
+      return 'villa';
+    }
+  });
   const [hierarchy, setHierarchy] = useState<BimElement>(VILLA_HIERARCHY);
   
   // Custom uploaded file details
   const [customFileName, setCustomFileName] = useState<string | null>(null);
 
   // AutoCAD Visual Styles and Camera settings
-  const [visualStyle, setVisualStyle] = useState<VisualStyle>('realistic');
+  const [visualStyle, setVisualStyle] = useState<VisualStyle>(() => {
+    try {
+      const saved = localStorage.getItem('archiview_visualStyle');
+      return saved !== null ? (saved as VisualStyle) : 'realistic';
+    } catch {
+      return 'realistic';
+    }
+  });
   const [navMode, setNavMode] = useState<NavMode>('orbit');
+
+  // Shared 2D Drawing & Projection Views state
+  const [is2DDrawingView, setIs2DDrawingView] = useState<boolean>(false);
+  const [twoDStyle, setTwoDStyle] = useState<'blueprint' | 'paper' | 'dark'>('blueprint');
+  const [twoDProjection, setTwoDProjection] = useState<'top' | 'front' | 'side'>('top');
 
   // Real-time Shadow controls and ambient lighting variables
   const [sunElevation, setSunElevation] = useState<number>(35); // Degrees (15 - 90)
@@ -36,9 +64,43 @@ export default function App() {
   const [shadowIntensity, setShadowIntensity] = useState<number>(0.65); // 0.0 - 1.0
 
   // Slicing cross-section clipping plane constraints
-  const [clippingX, setClippingX] = useState<number>(100); // offset (100 means fully clipped out)
-  const [clippingY, setClippingY] = useState<number>(100);
-  const [clippingZ, setClippingZ] = useState<number>(100);
+  const [clippingX, setClippingX] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('archiview_clippingX');
+      return saved !== null ? Number(saved) : 100;
+    } catch {
+      return 100;
+    }
+  });
+  const [clippingY, setClippingY] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('archiview_clippingY');
+      return saved !== null ? Number(saved) : 100;
+    } catch {
+      return 100;
+    }
+  });
+  const [clippingZ, setClippingZ] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('archiview_clippingZ');
+      return saved !== null ? Number(saved) : 100;
+    } catch {
+      return 100;
+    }
+  });
+
+  // Automatically persist selected parameters to localStorage on change
+  useEffect(() => {
+    try {
+      localStorage.setItem('archiview_activePresetId', activePresetId);
+      localStorage.setItem('archiview_visualStyle', visualStyle);
+      localStorage.setItem('archiview_clippingX', String(clippingX));
+      localStorage.setItem('archiview_clippingY', String(clippingY));
+      localStorage.setItem('archiview_clippingZ', String(clippingZ));
+    } catch (e) {
+      console.error('Failed to save parameters to localStorage:', e);
+    }
+  }, [activePresetId, visualStyle, clippingX, clippingY, clippingZ]);
 
   // Settings panels visibility states
   const [showSettingsDrawer, setShowSettingsDrawer] = useState<boolean>(false);
@@ -57,6 +119,32 @@ export default function App() {
   // Dialog modals
   const [showAboutModal, setShowAboutModal] = useState<boolean>(false);
   const [showDocsModal, setShowDocsModal] = useState<boolean>(false);
+  const [showLearningHubModal, setShowLearningHubModal] = useState<boolean>(false);
+  const [showElectronModal, setShowElectronModal] = useState<boolean>(false);
+  const [showWasmLabModal, setShowWasmLabModal] = useState<boolean>(false);
+  const [showPerformanceMonitor, setShowPerformanceMonitor] = useState<boolean>(false);
+
+  // 💾 Auto-save and Workspace Recovery state variables
+  const [autoSaveStatus, setAutoSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [lastAutoSaveTime, setLastAutoSaveTime] = useState<string>('');
+  const [showRestoreModal, setShowRestoreModal] = useState<boolean>(false);
+  const [recoveredSessionData, setRecoveredSessionData] = useState<any | null>(null);
+
+  // Ref to protect against automatic preset model loading/visual state resets when restoring
+  const isRestoringSessionRef = useRef<boolean>(false);
+
+  // Live 3D Interactive flight tour state
+  const [activeTourStep, setActiveTourStep] = useState<{
+    tourId: string;
+    stepIndex: number;
+    title: string;
+    description: string;
+  } | null>(null);
+
+  const [activeTourSteps, setActiveTourSteps] = useState<any[] | null>(null);
+  const [activeTourIndex, setActiveTourIndex] = useState<number>(0);
+  const [tourPaused, setTourPaused] = useState<boolean>(false);
+  const [tourCountdown, setTourCountdown] = useState<number>(6);
 
   // Dynamic coordinates tracking state for high density footer
   const [footerCoords, setFooterCoords] = useState({ x: 142.02, y: -84.51, z: 2850.00 });
@@ -101,6 +189,7 @@ export default function App() {
 
   // Sync / load preset-specific clash detections, reset custom visual tweaks
   useEffect(() => {
+    if (isRestoringSessionRef.current) return;
     setMaterialOverrides({});
     setElementTranslations({});
     setActiveClashId(null);
@@ -197,8 +286,281 @@ export default function App() {
     }
   };
 
+  // Controllable Stateful Tour Loop
+  useEffect(() => {
+    if (!activeTourSteps) return;
+    if (tourPaused) return;
+
+    const timer = setInterval(() => {
+      setTourCountdown((prev) => {
+        if (prev <= 1) {
+          // Time to advance!
+          setActiveTourIndex((prevIdx) => {
+            const nextIdx = prevIdx + 1;
+            if (nextIdx < activeTourSteps.length) {
+              const step = activeTourSteps[nextIdx];
+              setActiveTourStep({
+                tourId: activeTourStep?.tourId || '',
+                stepIndex: nextIdx,
+                title: step.title,
+                description: step.description
+              });
+              step.action();
+              return nextIdx;
+            } else {
+              // End of tour
+              stopActiveTour();
+              return 0;
+            }
+          });
+          return 6; // Reset countdown
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [activeTourSteps, tourPaused, activeTourIndex, activeTourStep]);
+
+  const stopActiveTour = () => {
+    setActiveTourStep(null);
+    setActiveTourSteps(null);
+    setActiveTourIndex(0);
+    setTourPaused(false);
+    setTourCountdown(6);
+  };
+
+  const runTourSequence = (tourId: string, steps: { title: string; description: string; action: () => void }[]) => {
+    setActiveTourSteps(steps);
+    setActiveTourIndex(0);
+    setTourPaused(false);
+    setTourCountdown(6);
+    
+    // Trigger first step action immediately
+    setActiveTourStep({
+      tourId,
+      stepIndex: 0,
+      title: steps[0].title,
+      description: steps[0].description
+    });
+    steps[0].action();
+  };
+
+  const handlePrevTourStep = () => {
+    if (!activeTourSteps || activeTourIndex <= 0) return;
+    const prevIdx = activeTourIndex - 1;
+    setActiveTourIndex(prevIdx);
+    setTourCountdown(6);
+    const step = activeTourSteps[prevIdx];
+    setActiveTourStep({
+      tourId: activeTourStep?.tourId || '',
+      stepIndex: prevIdx,
+      title: step.title,
+      description: step.description
+    });
+    step.action();
+  };
+
+  const handleNextTourStep = () => {
+    if (!activeTourSteps) return;
+    const nextIdx = activeTourIndex + 1;
+    if (nextIdx < activeTourSteps.length) {
+      setActiveTourIndex(nextIdx);
+      setTourCountdown(6);
+      const step = activeTourSteps[nextIdx];
+      setActiveTourStep({
+        tourId: activeTourStep?.tourId || '',
+        stepIndex: nextIdx,
+        title: step.title,
+        description: step.description
+      });
+      step.action();
+    } else {
+      stopActiveTour();
+    }
+  };
+
+  const handleStartLiveTour = (tourId: string) => {
+    // Stop any current solar animation
+    setIsSolarAnimating(false);
+    setActiveClashId(null);
+    setSelectedElementId(null);
+
+    // Hide the learning hub modal so the user can see the 3D model flying!
+    setShowLearningHubModal(false);
+
+    // Run custom sequence depending on the selected course
+    if (tourId === 'nav-basics') {
+      setNavMode('orbit');
+      setVisualStyle('realistic');
+      
+      const steps = [
+        {
+          title: "1. Viewport Alignment",
+          description: "Positioning camera automatically around the model envelope to audit secondary framework.",
+          action: () => {
+            window.dispatchEvent(new CustomEvent('archi-tour-command', {
+              detail: { action: 'fly', x: 22, y: 15, z: 25, tx: 0, ty: 2, tz: 0 }
+            }));
+          }
+        },
+        {
+          title: "2. Deep Zoom Analysis",
+          description: "Scanning structural frames and concrete layout from a close-up perspective.",
+          action: () => {
+            window.dispatchEvent(new CustomEvent('archi-tour-command', {
+              detail: { action: 'fly', x: 8, y: 5, z: 10, tx: 0, ty: 2, tz: 0 }
+            }));
+          }
+        },
+        {
+          title: "3. Column Frame Detail",
+          description: "Zooming in on the outer support pillars supporting the cantilever timber roof.",
+          action: () => {
+            window.dispatchEvent(new CustomEvent('archi-tour-command', {
+              detail: { action: 'fly', x: -5, y: 3, z: 8, tx: -2, ty: 1, tz: 1 }
+            }));
+            setSelectedElementId('#105');
+          }
+        },
+        {
+          title: "4. Roof Trusses Inspection",
+          description: "Adjusting pitch to audit structural roof beams and load paths from above.",
+          action: () => {
+            window.dispatchEvent(new CustomEvent('archi-tour-command', {
+              detail: { action: 'fly', x: 12, y: 16, z: 12, tx: 0, ty: 4, tz: 0 }
+            }));
+            setSelectedElementId(null);
+          }
+        },
+        {
+          title: "5. Walkthrough Perspective",
+          description: "Positioning camera at 1.8m architectural eye-level height inside the building space.",
+          action: () => {
+            setNavMode('walkthrough');
+            window.dispatchEvent(new CustomEvent('archi-tour-command', {
+              detail: { action: 'fly', x: 0, y: 1.8, z: 6, tx: 0, ty: 1.8, tz: -5 }
+            }));
+          }
+        }
+      ];
+
+      runTourSequence('nav-basics', steps);
+    } 
+    else if (tourId === 'clash-detection') {
+      setNavMode('orbit');
+      setVisualStyle('xray'); // X-ray mode makes it super cool to view internal clashes
+
+      const firstClashId = activePresetId === 'office' ? 'O-01' : 'V-01';
+      const steps = [
+        {
+          title: "1. Sourcing Spatial Conflict",
+          description: `Highlighting reported structural collision ID: ${firstClashId} in X-Ray translucent mode.`,
+          action: () => {
+            setActiveClashId(firstClashId);
+          }
+        },
+        {
+          title: "2. Visualizing Physical Overlap Volume",
+          description: "Zooming into intersection point. The red dashed laser points to floor altitude target.",
+          action: () => {
+            const clashX = activePresetId === 'office' ? -3.0 : 4.0;
+            const clashY = activePresetId === 'office' ? 4.5 : 3.2;
+            const clashZ = activePresetId === 'office' ? 0.0 : 4.9;
+            window.dispatchEvent(new CustomEvent('archi-tour-command', {
+              detail: { action: 'fly', x: clashX + 4, y: clashY + 3, z: clashZ + 4, tx: clashX, ty: clashY, tz: clashZ }
+            }));
+          }
+        },
+        {
+          title: "3. Resolving the Clash",
+          description: "Marking structural intersection as approved and resolved under educational training codes.",
+          action: () => {
+            setClashes(prev => prev.map(c => c.id === firstClashId ? { ...c, resolved: true } : c));
+          }
+        }
+      ];
+
+      runTourSequence('clash-detection', steps);
+    } 
+    else if (tourId === 'solar-study') {
+      setNavMode('orbit');
+      setVisualStyle('realistic');
+      
+      const steps = [
+        {
+          title: "1. Activating Solar Study",
+          description: "Opening environment shadow configuration. Azimuth set to 140 degrees, elevation 35.",
+          action: () => {
+            setSunElevation(35);
+            setSunAzimuth(140);
+            setShadowIntensity(0.85);
+          }
+        },
+        {
+          title: "2. Simulating Peak Summer Solstice",
+          description: "Swerving sun elevation to 75 degrees representing high midday sun angles with short crisp shadows.",
+          action: () => {
+            setSunElevation(75);
+            setSunAzimuth(180);
+          }
+        },
+        {
+          title: "3. Winter Solstice Long Shadows",
+          description: "Lowering sun path to 18 degrees. Observe the deep casting shadows across the CAD baseline grid.",
+          action: () => {
+            setSunElevation(18);
+            setSunAzimuth(130);
+          }
+        }
+      ];
+
+      runTourSequence('solar-study', steps);
+    } 
+    else if (tourId === 'ai-audits') {
+      setNavMode('orbit');
+      setVisualStyle('conceptual');
+
+      const colId = activePresetId === 'office' ? '#o102' : '#105';
+      const steps = [
+        {
+          title: "1. Locating Audit Element",
+          description: `Selecting Concrete Column element ID: ${colId} inside the viewport.`,
+          action: () => {
+            setSelectedElementId(colId);
+            const targetX = activePresetId === 'office' ? -3.0 : 4.0;
+            const targetY = activePresetId === 'office' ? 4.5 : 3.2;
+            const targetZ = activePresetId === 'office' ? 0.0 : 4.9;
+            window.dispatchEvent(new CustomEvent('archi-tour-command', {
+              detail: { action: 'fly', x: targetX + 5, y: targetY + 3, z: targetZ + 5, tx: targetX, ty: targetY, tz: targetZ }
+            }));
+          }
+        },
+        {
+          title: "2. Connecting to Gemini AI Consultant",
+          description: "Triggering a structural safety audit prompt to the right-side Gemini consultant panel.",
+          action: () => {
+            window.dispatchEvent(new CustomEvent('archi-ai-prompt', {
+              detail: { prompt: `Conduct an exhaustive structural audit on active selected Concrete Column: ID is "${colId}". Describe typical safety factors, loading calculations, and shear stress warnings.` }
+            }));
+          }
+        }
+      ];
+
+      runTourSequence('ai-audits', steps);
+    }
+  };
+
+  // Cleanup active tour on unmount
+  useEffect(() => {
+    return () => {
+      stopActiveTour();
+    };
+  }, []);
+
   // 2. Load Preset Hierarchy spatial models & reset visual visibility states
   useEffect(() => {
+    if (isRestoringSessionRef.current) return;
     let activeHierarchy = VILLA_HIERARCHY;
     if (activePresetId === 'office') {
       activeHierarchy = OFFICE_HIERARCHY;
@@ -241,6 +603,179 @@ export default function App() {
     window.addEventListener('mousemove', handleMouseMove);
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, []);
+
+  // 🔍 Startup check for previous autosaved workspace recovery snapshot
+  useEffect(() => {
+    try {
+      const rawData = localStorage.getItem('archiview_autosave_data');
+      if (rawData) {
+        const parsed = JSON.parse(rawData);
+        if (parsed && parsed.timestamp) {
+          // Count override metrics to display inside the recovery dialog
+          const materialCount = parsed.materialOverrides ? Object.keys(parsed.materialOverrides).length : 0;
+          const translationCount = parsed.elementTranslations ? Object.keys(parsed.elementTranslations).length : 0;
+          
+          const countNodes = (node: BimElement): number => {
+            let cnt = 1;
+            if (node.children) {
+              node.children.forEach(c => cnt += countNodes(c));
+            }
+            return cnt;
+          };
+          const nodesCount = parsed.hierarchy ? countNodes(parsed.hierarchy) : 0;
+          const visibleCount = parsed.visibleElementIds ? parsed.visibleElementIds.length : 0;
+          const hiddenCount = Math.max(0, nodesCount - visibleCount);
+
+          setRecoveredSessionData({
+            ...parsed,
+            materialOverridesCount: materialCount,
+            elementTranslationsCount: translationCount,
+            hiddenElementsCount: hiddenCount,
+            nodesCount: nodesCount
+          });
+          setShowRestoreModal(true);
+        }
+      }
+    } catch (e) {
+      console.error('Archiview: Failed to check for autosaved session:', e);
+    }
+  }, []);
+
+  // 💾 Periodic Auto-save background task
+  useEffect(() => {
+    const interval = setInterval(() => {
+      try {
+        // If restoring or modal is open, avoid overwriting with incomplete states
+        if (isRestoringSessionRef.current || showRestoreModal) return;
+
+        setAutoSaveStatus('saving');
+
+        const saveData = {
+          hierarchy,
+          materialOverrides,
+          elementTranslations,
+          visibleElementIds: Array.from(visibleElementIds),
+          activePresetId,
+          customFileName,
+          selectedElementId,
+          visualStyle,
+          clippingX,
+          clippingY,
+          clippingZ,
+          sunElevation,
+          sunAzimuth,
+          shadowIntensity,
+          clashes,
+          activeClashId,
+          timestamp: Date.now()
+        };
+
+        localStorage.setItem('archiview_autosave_data', JSON.stringify(saveData));
+
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        setLastAutoSaveTime(timeStr);
+
+        setTimeout(() => {
+          setAutoSaveStatus('saved');
+        }, 600);
+
+        // Reset status label to idle
+        setTimeout(() => {
+          setAutoSaveStatus('idle');
+        }, 2500);
+
+      } catch (e) {
+        console.error('Archiview: Auto-save checkpoint failed:', e);
+        setAutoSaveStatus('idle');
+      }
+    }, 6000); // Checkpoint every 6 seconds
+
+    return () => clearInterval(interval);
+  }, [
+    hierarchy,
+    materialOverrides,
+    elementTranslations,
+    visibleElementIds,
+    activePresetId,
+    customFileName,
+    selectedElementId,
+    visualStyle,
+    clippingX,
+    clippingY,
+    clippingZ,
+    sunElevation,
+    sunAzimuth,
+    shadowIntensity,
+    clashes,
+    activeClashId,
+    showRestoreModal
+  ]);
+
+  // 🟢 Action to restore previous workspace checkpoint
+  const handleRestoreSession = () => {
+    if (!recoveredSessionData) return;
+
+    try {
+      isRestoringSessionRef.current = true;
+
+      if (recoveredSessionData.hierarchy) {
+        setHierarchy(recoveredSessionData.hierarchy);
+      }
+      setCustomFileName(recoveredSessionData.customFileName || null);
+
+      if (recoveredSessionData.activePresetId) {
+        setActivePresetId(recoveredSessionData.activePresetId);
+      }
+
+      setMaterialOverrides(recoveredSessionData.materialOverrides || {});
+      setElementTranslations(recoveredSessionData.elementTranslations || {});
+
+      if (recoveredSessionData.visibleElementIds) {
+        setVisibleElementIds(new Set(recoveredSessionData.visibleElementIds));
+      }
+
+      setSelectedElementId(recoveredSessionData.selectedElementId || null);
+
+      if (recoveredSessionData.visualStyle) setVisualStyle(recoveredSessionData.visualStyle);
+      if (recoveredSessionData.clippingX !== undefined) setClippingX(recoveredSessionData.clippingX);
+      if (recoveredSessionData.clippingY !== undefined) setClippingY(recoveredSessionData.clippingY);
+      if (recoveredSessionData.clippingZ !== undefined) setClippingZ(recoveredSessionData.clippingZ);
+      if (recoveredSessionData.sunElevation !== undefined) setSunElevation(recoveredSessionData.sunElevation);
+      if (recoveredSessionData.sunAzimuth !== undefined) setSunAzimuth(recoveredSessionData.sunAzimuth);
+      if (recoveredSessionData.shadowIntensity !== undefined) setShadowIntensity(recoveredSessionData.shadowIntensity);
+
+      if (recoveredSessionData.clashes) {
+        setClashes(recoveredSessionData.clashes);
+      }
+      if (recoveredSessionData.activeClashId) {
+        setActiveClashId(recoveredSessionData.activeClashId);
+      }
+
+      setShowRestoreModal(false);
+      setRecoveredSessionData(null);
+
+      // Reset the lock guard after all state updates batch and resolve
+      setTimeout(() => {
+        isRestoringSessionRef.current = false;
+      }, 200);
+
+    } catch (e) {
+      console.error('Archiview: Failed to restore session:', e);
+      isRestoringSessionRef.current = false;
+    }
+  };
+
+  // 🔴 Action to discard previous workspace and start fresh
+  const handleDiscardSession = () => {
+    try {
+      localStorage.removeItem('archiview_autosave_data');
+      setShowRestoreModal(false);
+      setRecoveredSessionData(null);
+    } catch (e) {
+      console.error('Archiview: Failed to discard session:', e);
+    }
+  };
 
   // Helper to count total elements in IFC tree
   const findElementsCount = (node: BimElement): number => {
@@ -598,6 +1133,7 @@ export default function App() {
     setClippingZ(100);
     setMeasureMode(false);
     setMeasurements([]);
+    clearAllAnnotations();
   };
 
   const selectedElement = selectedElementId ? findNodeById(hierarchy, selectedElementId) : null;
@@ -626,6 +1162,10 @@ export default function App() {
         setShadowIntensity={setShadowIntensity}
         setShowDocsModal={setShowDocsModal}
         setShowAboutModal={setShowAboutModal}
+        setShowLearningHubModal={setShowLearningHubModal}
+        setShowElectronModal={setShowElectronModal}
+        setShowWasmLabModal={setShowWasmLabModal}
+        setShowPerformanceMonitor={setShowPerformanceMonitor}
         language={language}
         setLanguage={setLanguage}
         t={t}
@@ -669,6 +1209,7 @@ export default function App() {
             isRtl={isRtl}
             materialOverrides={materialOverrides}
             onUpdateElementMaterial={(id, mat) => setMaterialOverrides(prev => ({ ...prev, [id]: mat }))}
+            onBatchUpdateElementMaterials={(updates) => setMaterialOverrides(prev => ({ ...prev, ...updates }))}
             clashes={clashes}
             onResolveClashLocally={handleResolveClashLocally}
             activeClashId={activeClashId}
@@ -681,6 +1222,14 @@ export default function App() {
                 }
               }
             }}
+            annotations={annotations}
+            onUpdateAnnotation={updateAnnotation}
+            is2DDrawingView={is2DDrawingView}
+            setIs2DDrawingView={setIs2DDrawingView}
+            twoDStyle={twoDStyle}
+            setTwoDStyle={setTwoDStyle}
+            twoDProjection={twoDProjection}
+            setTwoDProjection={setTwoDProjection}
           />
         </div>
 
@@ -708,7 +1257,98 @@ export default function App() {
             elementTranslations={elementTranslations}
             clashes={clashes}
             activeClashId={activeClashId}
+            is2DDrawingView={is2DDrawingView}
+            setIs2DDrawingView={setIs2DDrawingView}
+            twoDStyle={twoDStyle}
+            setTwoDStyle={setTwoDStyle}
+            twoDProjection={twoDProjection}
+            setTwoDProjection={setTwoDProjection}
           />
+
+          {/* HIGH-TECH CAD HOLOGRAPHIC HUD OVERLAY FOR TUTORIAL FLIGHT TOURS */}
+          {activeTourStep && activeTourSteps && (
+            <div className="absolute bottom-4 left-4 right-4 bg-[#141414]/95 backdrop-blur-md border border-amber-500/40 rounded-lg p-3.5 z-20 shadow-2xl flex flex-col md:flex-row md:items-center justify-between gap-3 animate-slide-up" id="hud-flight-simulation">
+              <div className="flex items-center gap-4">
+                <div className="relative shrink-0">
+                  <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+                  </span>
+                  <div className="bg-[#1f1f1f] border border-amber-500/30 p-2.5 rounded text-amber-500">
+                    <Play className={`w-5 h-5 ${tourPaused ? '' : 'animate-pulse'}`} />
+                  </div>
+                </div>
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2 text-left">
+                    <span className="text-[10px] font-mono text-amber-500 uppercase tracking-widest font-bold">Live 3D Tour Mode</span>
+                    <span className="h-3.5 w-[1px] bg-neutral-700" />
+                    <span className="text-[10px] font-mono text-neutral-400">Step {activeTourIndex + 1} of {activeTourSteps.length}</span>
+                    <span className="h-3.5 w-[1px] bg-neutral-700" />
+                    <span className="text-[10px] font-mono font-bold text-emerald-400 bg-emerald-950/40 px-1.5 py-0.2 border border-emerald-900/30 rounded">
+                      {tourPaused ? '⏸️ PAUSED' : `⏱️ AUTO-ADVANCE: ${tourCountdown}s`}
+                    </span>
+                  </div>
+                  <h4 className="text-sm font-sans font-bold text-white tracking-tight text-left">{activeTourStep.title}</h4>
+                  <p className="text-xs text-neutral-300 max-w-xl font-sans text-left">{activeTourStep.description}</p>
+                </div>
+              </div>
+
+              {/* FLIGHT ENGINE INTERACTIVE CONTROLS */}
+              <div className="flex flex-wrap items-center gap-3 font-mono justify-end">
+                {/* Telemetry info */}
+                <div className="hidden lg:flex flex-col text-[8.5px] text-[#888] bg-[#1a1a1a] p-1.5 rounded border border-[#2d2d2d] leading-tight min-w-[120px] text-left">
+                  <span>LATENCY: 1.2ms</span>
+                  <span>AUTOCUT: ENABLED</span>
+                  <span>CAM: [{(footerCoords.x + activeTourIndex * 4).toFixed(1)}, {(footerCoords.y - activeTourIndex * 2).toFixed(1)}, {(footerCoords.z + activeTourIndex * 15).toFixed(1)}]</span>
+                </div>
+
+                {/* Navigation Buttons Row */}
+                <div className="flex items-center gap-1.5 bg-[#1c1c1c] p-1 rounded border border-[#333]">
+                  <button
+                    onClick={handlePrevTourStep}
+                    disabled={activeTourIndex === 0}
+                    className={`text-[10px] px-2.5 py-1 rounded transition border-0 font-bold ${
+                      activeTourIndex === 0 
+                        ? 'text-neutral-600 bg-neutral-900 cursor-not-allowed' 
+                        : 'text-neutral-300 bg-[#2d2d2d] hover:bg-[#3d3d3d] cursor-pointer'
+                    }`}
+                    title="Previous Tour Step"
+                  >
+                    ◀ Prev
+                  </button>
+
+                  <button
+                    onClick={() => setTourPaused(!tourPaused)}
+                    className="text-[10px] px-2.5 py-1 rounded transition border-0 font-bold bg-[#2d2d2d] hover:bg-[#3d3d3d] text-amber-400 cursor-pointer"
+                    title={tourPaused ? 'Resume auto-advance' : 'Pause auto-advance timer'}
+                  >
+                    {tourPaused ? '▶ Play' : '⏸ Pause'}
+                  </button>
+
+                  <button
+                    onClick={handleNextTourStep}
+                    disabled={activeTourIndex === activeTourSteps.length - 1}
+                    className={`text-[10px] px-2.5 py-1 rounded transition border-0 font-bold ${
+                      activeTourIndex === activeTourSteps.length - 1 
+                        ? 'text-neutral-600 bg-neutral-900 cursor-not-allowed' 
+                        : 'text-neutral-300 bg-[#2d2d2d] hover:bg-[#3d3d3d] cursor-pointer'
+                    }`}
+                    title="Skip to Next Tour Step"
+                  >
+                    Next ▶
+                  </button>
+                </div>
+                
+                <button
+                  onClick={stopActiveTour}
+                  className="bg-red-950 hover:bg-red-900 border border-red-500/50 hover:border-red-500 text-red-200 text-xs px-3.5 py-1.5 rounded transition cursor-pointer font-bold shrink-0"
+                  id="btn-stop-flight-tour"
+                >
+                  Stop Tour
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* FLOATING SOLAR STUDY CONTROL CENTER */}
           <div className={`absolute top-2.5 ${isRtl ? 'left-2.5' : 'right-2.5'} bg-[#141414]/90 backdrop-blur-md border border-[#2d2d2d] rounded-md p-2 w-72 z-10 shadow-2xl space-y-2`} id="solar-path-studio">
@@ -869,6 +1509,8 @@ export default function App() {
         cadClock={cadClock}
         t={t}
         isRtl={isRtl}
+        autoSaveStatus={autoSaveStatus}
+        lastAutoSaveTime={lastAutoSaveTime}
       />
 
       {/* About & Diagnostics Info Modal */}
@@ -892,6 +1534,47 @@ export default function App() {
         isOpen={showDocsModal}
         onClose={() => setShowDocsModal(false)}
         t={t}
+        isRtl={isRtl}
+      />
+
+      {/* 🎬 Interactive Video Demo & Certifications Learning Hub Modal */}
+      <LearningHubModal
+        isOpen={showLearningHubModal}
+        onClose={() => setShowLearningHubModal(false)}
+        onStartLiveTour={handleStartLiveTour}
+        isRtl={isRtl}
+        userEmail="santhosh.sivakumar.ui@gmail.com"
+      />
+
+      {/* 🖥️ Desktop App Mode (Electron) Integration Modal */}
+      <ElectronModal
+        isOpen={showElectronModal}
+        onClose={() => setShowElectronModal(false)}
+        isRtl={isRtl}
+      />
+
+      {/* ⚡ WebAssembly Performance Lab Modal */}
+      <WasmLabModal
+        isOpen={showWasmLabModal}
+        onClose={() => setShowWasmLabModal(false)}
+        isRtl={isRtl}
+      />
+
+      {/* 📊 Engine Performance Monitor Modal */}
+      <PerformanceMonitor
+        isOpen={showPerformanceMonitor}
+        onClose={() => setShowPerformanceMonitor(false)}
+        activeModelName={activeModelName}
+        nodesCount={findElementsCount(hierarchy)}
+        isRtl={isRtl}
+      />
+
+      {/* 💾 Session Restore Recovery Modal */}
+      <SessionRestoreModal
+        isOpen={showRestoreModal}
+        onRestore={handleRestoreSession}
+        onDiscard={handleDiscardSession}
+        savedData={recoveredSessionData || { activePresetId: 'villa', customFileName: null, timestamp: Date.now() }}
         isRtl={isRtl}
       />
 

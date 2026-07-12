@@ -58,3 +58,23 @@ export interface Clash {
   aiResolution?: string;
   offsetTranslation?: { x: number; y: number; z: number };
 }
+
+declare global {
+  interface Window {
+    electronAPI?: {
+      isElectron: boolean;
+      getDiagnostics: () => Promise<{
+        platform: string;
+        arch: string;
+        version: string;
+        chromeVersion: string;
+        nodeVersion: string;
+        electronVersion: string;
+        memoryUsage: { rss: number; heapTotal: number; heapUsed: number; external: number };
+        cpuUsage: { user: number; system: number };
+      }>;
+      openExternalLink: (url: string) => void;
+    };
+  }
+}
+

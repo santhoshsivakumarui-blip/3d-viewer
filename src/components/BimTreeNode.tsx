@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { BimElement } from '../types';
-import { ChevronRight, ChevronDown, Eye, EyeOff } from 'lucide-react';
+import { ChevronRight, ChevronDown, Eye, EyeOff, MessageSquare } from 'lucide-react';
 
 interface BimTreeNodeProps {
   node: BimElement;
@@ -12,6 +12,9 @@ interface BimTreeNodeProps {
   visibleElementIds: Set<string>;
   onToggleVisibility: (id: string) => void;
   isRtl: boolean;
+  annotations?: Record<string, string>;
+  alwaysExpanded?: boolean;
+  onUpdateElementMaterial?: (id: string, mat: string) => void;
 }
 
 export const BimTreeNode: React.FC<BimTreeNodeProps> = ({
@@ -24,11 +27,16 @@ export const BimTreeNode: React.FC<BimTreeNodeProps> = ({
   visibleElementIds,
   onToggleVisibility,
   isRtl,
+  annotations = {},
+  alwaysExpanded = false,
+  onUpdateElementMaterial,
 }) => {
+  const [isDragOver, setIsDragOver] = useState(false);
   const hasChildren = node.children && node.children.length > 0;
-  const isExpanded = expandedNodes.has(node.id);
+  const isExpanded = alwaysExpanded || expandedNodes.has(node.id);
   const isSelected = selectedElementId === node.id;
   const isVisible = visibleElementIds.has(node.id);
+  const hasAnnotation = !!annotations[node.id];
 
   // Dynamic badge color depending on IFC type
   const getBadgeStyle = (type: string) => {
@@ -53,8 +61,29 @@ export const BimTreeNode: React.FC<BimTreeNodeProps> = ({
       {/* Row element */}
       <div 
         onClick={() => onSelectElement(node.id)}
-        className={`flex items-center group py-1 px-1.5 cursor-pointer transition-colors border-b border-[#222]/20 ${
-          isSelected ? 'bg-[#252525] border-l-2 border-blue-500 text-white font-medium' : 'hover:bg-[#2a2a2a] text-[#d1d1d1]'
+        onDragOver={(e) => {
+          if (onUpdateElementMaterial && !['IfcProject', 'IfcSite', 'IfcBuilding', 'IfcBuildingStorey'].includes(node.type)) {
+            e.preventDefault();
+            setIsDragOver(true);
+          }
+        }}
+        onDragLeave={() => setIsDragOver(false)}
+        onDrop={(e) => {
+          if (onUpdateElementMaterial && !['IfcProject', 'IfcSite', 'IfcBuilding', 'IfcBuildingStorey'].includes(node.type)) {
+            e.preventDefault();
+            setIsDragOver(false);
+            const matId = e.dataTransfer.getData('text/plain');
+            if (matId) {
+              onUpdateElementMaterial(node.id, matId);
+            }
+          }
+        }}
+        className={`flex items-center group py-1 px-1.5 cursor-pointer transition-all border-b border-[#222]/20 ${
+          isDragOver 
+            ? 'bg-emerald-950/40 border-2 border-dashed border-emerald-500 text-emerald-300 scale-[0.99]' 
+            : isSelected 
+              ? 'bg-[#252525] border-l-2 border-blue-500 text-white font-medium' 
+              : 'hover:bg-[#2a2a2a] text-[#d1d1d1]'
         }`}
         style={{ 
           paddingLeft: isRtl ? '6px' : `${depth * 10 + 6}px`,
@@ -94,6 +123,11 @@ export const BimTreeNode: React.FC<BimTreeNodeProps> = ({
             <span className={`text-[8px] font-mono px-1 rounded-sm uppercase tracking-wider font-bold ${getBadgeStyle(node.type)}`}>
               {node.type.replace('Ifc', '')}
             </span>
+            {hasAnnotation && (
+              <span title={`Note: ${annotations[node.id]}`} className="inline-flex items-center">
+                <MessageSquare className="w-3 h-3 text-amber-400 shrink-0 animate-pulse" />
+              </span>
+            )}
           </div>
         </div>
 
@@ -115,6 +149,9 @@ export const BimTreeNode: React.FC<BimTreeNodeProps> = ({
               visibleElementIds={visibleElementIds}
               onToggleVisibility={onToggleVisibility}
               isRtl={isRtl}
+              annotations={annotations}
+              alwaysExpanded={alwaysExpanded}
+              onUpdateElementMaterial={onUpdateElementMaterial}
             />
           ))}
         </div>
